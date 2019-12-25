@@ -2,8 +2,11 @@ package hazelcast
 
 import (
 	"context"
+	"reflect"
 
 	hazelcastv1alpha1 "github.com/hazelcast/hazelcast-go-operator/pkg/apis/hazelcast/v1alpha1"
+
+	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -53,7 +56,7 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 
 	// TODO(user): Modify this to be the types you create that are owned by the primary resource
 	// Watch for changes to secondary resource Pods and requeue the owner Hazelcast
-	err = c.Watch(&source.Kind{Type: &corev1.Pod{}}, &handler.EnqueueRequestForOwner{
+	err = c.Watch(&source.Kind{Type: &appsv1.StatefulSet{}}, &handler.EnqueueRequestForOwner{
 		IsController: true,
 		OwnerType:    &hazelcastv1alpha1.Hazelcast{},
 	})
@@ -87,67 +90,128 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	reqLogger.Info("Reconciling Hazelcast")
 
 	// Fetch the Hazelcast instance
-	instance := &hazelcastv1alpha1.Hazelcast{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, instance)
+	hazelcast := &hazelcastv1alpha1.Hazelcast{}
+	err := r.client.Get(context.TODO(), request.NamespacedName, hazelcast)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
 			// Owned objects are automatically garbage collected. For additional cleanup logic use finalizers.
 			// Return and don't requeue
+			reqLogger.Info("Hazelcast resource not found. Ignoring since object must be deleted")
 			return reconcile.Result{}, nil
 		}
 		// Error reading the object - requeue the request.
+		reqLogger.Error(err, "Failed to get Hazelcast")
 		return reconcile.Result{}, err
 	}
 
-	// Define a new Pod object
-	pod := newPodForCR(instance)
-
-	// Set Hazelcast instance as the owner and controller
-	if err := controllerutil.SetControllerReference(instance, pod, r.scheme); err != nil {
-		return reconcile.Result{}, err
-	}
-
-	// Check if this Pod already exists
-	found := &corev1.Pod{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: pod.Name, Namespace: pod.Namespace}, found)
+	// Check if the StatefulSet already exists, if not create a new one
+	found := &appsv1.StatefulSet{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, found)
 	if err != nil && errors.IsNotFound(err) {
-		reqLogger.Info("Creating a new Pod", "Pod.Namespace", pod.Namespace, "Pod.Name", pod.Name)
-		err = r.client.Create(context.TODO(), pod)
+		// Define a new statefulSet
+		statefulSet := r.statefulSetForHazelcast(hazelcast)
+		reqLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", statefulSet.Namespace, "StatefulSet.Name", statefulSet.Name)
+		err = r.client.Create(context.TODO(), statefulSet)
 		if err != nil {
+			reqLogger.Error(err, "Failed to create new StatefulSet", "StatefulSet.Namespace", statefulSet.Namespace, "StatefulSet.Name", statefulSet.Name)
 			return reconcile.Result{}, err
 		}
-
-		// Pod created successfully - don't requeue
-		return reconcile.Result{}, nil
+		// StatefulSet created successfully - return and requeue
+		return reconcile.Result{Requeue: true}, nil
 	} else if err != nil {
+		reqLogger.Error(err, "Failed to get StatefulSet")
 		return reconcile.Result{}, err
 	}
 
-	// Pod already exists - don't requeue
-	reqLogger.Info("Skip reconcile: Pod already exists", "Pod.Namespace", found.Namespace, "Pod.Name", found.Name)
+	// Ensure the deployment size is the same as the spec
+	size := hazelcast.Spec.Size
+	if *found.Spec.Replicas != size {
+		found.Spec.Replicas = &size
+		err = r.client.Update(context.TODO(), found)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update StatefulSet", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
+			return reconcile.Result{}, err
+		}
+		// Spec updated - return and requeue
+		return reconcile.Result{Requeue: true}, nil
+	}
+
+	// Update the Hazelcast status with the pod names
+	// List the pods for this hazelcast's deployment
+	podList := &corev1.PodList{}
+	listOpts := []client.ListOption{
+		client.InNamespace(hazelcast.Namespace),
+		client.MatchingLabels(labelsForHazelcast(hazelcast.Name)),
+	}
+	if err = r.client.List(context.TODO(), podList, listOpts...); err != nil {
+		reqLogger.Error(err, "Failed to list pods", "Hazelcast.Namespace", hazelcast.Namespace, "Hazelcast.Name", hazelcast.Name)
+		return reconcile.Result{}, err
+	}
+	podNames := getPodNames(podList.Items)
+
+	// Update status.Nodes if neededhazelcast
+	if !reflect.DeepEqual(podNames, hazelcast.Status.Nodes) {
+		hazelcast.Status.Nodes = podNames
+		err := r.client.Status().Update(context.TODO(), hazelcast)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update Hazelcast status")
+			return reconcile.Result{}, err
+		}
+	}
+
 	return reconcile.Result{}, nil
 }
 
-// newPodForCR returns a busybox pod with the same name/namespace as the cr
-func newPodForCR(cr *hazelcastv1alpha1.Hazelcast) *corev1.Pod {
-	labels := map[string]string{
-		"app": cr.Name,
-	}
-	return &corev1.Pod{
+// deploymentForHazelcast returns a hazelcast Deployment object
+func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *appsv1.StatefulSet {
+	ls := labelsForHazelcast(hazelcast.Name)
+	replicas := hazelcast.Spec.Size
+
+	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      cr.Name + "-pod",
-			Namespace: cr.Namespace,
-			Labels:    labels,
+			Name:      hazelcast.Name,
+			Namespace: hazelcast.Namespace,
 		},
-		Spec: corev1.PodSpec{
-			Containers: []corev1.Container{
-				{
-					Name:    "busybox",
-					Image:   "busybox",
-					Command: []string{"sleep", "3600"},
+		Spec: appsv1.StatefulSetSpec{
+			Replicas: &replicas,
+			Selector: &metav1.LabelSelector{
+				MatchLabels: ls,
+			},
+			Template: corev1.PodTemplateSpec{
+				ObjectMeta: metav1.ObjectMeta{
+					Labels: ls,
+				},
+				Spec: corev1.PodSpec{
+					Containers: []corev1.Container{{
+						Image: "hazelcast/hazelcast:3.12.5",
+						Name:  "hazelcast",
+						Ports: []corev1.ContainerPort{{
+							ContainerPort: 5701,
+							Name:          "hazelcast",
+						}},
+					}},
 				},
 			},
 		},
 	}
+
+	// Set Memcached instance as the owner and controller
+	controllerutil.SetControllerReference(hazelcast, statefulSet, r.scheme)
+	return statefulSet
+}
+
+// labelsForHazelcast returns the labels for selecting the resources
+// belonging to the given hazelcast CR name.
+func labelsForHazelcast(name string) map[string]string {
+	return map[string]string{"app": "hazelcast", "hazelcast_cr": name}
+}
+
+// getPodNames returns the pod names of the array of pods passed in
+func getPodNames(pods []corev1.Pod) []string {
+	var podNames []string
+	for _, pod := range pods {
+		podNames = append(podNames, pod.Name)
+	}
+	return podNames
 }
