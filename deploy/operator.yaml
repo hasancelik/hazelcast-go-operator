@@ -1,0 +1,33 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hazelcast-go-operator
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      name: hazelcast-go-operator
+  template:
+    metadata:
+      labels:
+        name: hazelcast-go-operator
+    spec:
+      serviceAccountName: hazelcast-go-operator
+      containers:
+        - name: hazelcast-go-operator
+          # Replace this with the built image name
+          image: REPLACE_IMAGE
+          command:
+          - hazelcast-go-operator
+          imagePullPolicy: Always
+          env:
+            - name: WATCH_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: OPERATOR_NAME
+              value: "hazelcast-go-operator"
