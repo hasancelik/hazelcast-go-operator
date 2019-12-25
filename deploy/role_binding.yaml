@@ -1,11 +1,12 @@
-kind: RoleBinding
+kind: ClusterRoleBinding
 apiVersion: rbac.authorization.k8s.io/v1
 metadata:
   name: hazelcast-go-operator
 subjects:
 - kind: ServiceAccount
   name: hazelcast-go-operator
+  namespace: default
 roleRef:
-  kind: Role
+  kind: ClusterRole
   name: hazelcast-go-operator
   apiGroup: rbac.authorization.k8s.io
