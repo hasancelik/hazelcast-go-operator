@@ -231,10 +231,7 @@ func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Ha
 		Spec: corev1.ServiceSpec{
 			Type:     serviceSpec.Type,
 			Selector: map[string]string{"app": "hazelcast", "hazelcast_cr": hazelcast.Name},
-			Ports: []corev1.ServicePort{{
-				Protocol: serviceSpec.Ports[0].Protocol,
-				Port:     serviceSpec.Ports[0].Port,
-			}},
+			Ports:    serviceSpec.Ports,
 		},
 	}
 
