@@ -124,6 +124,22 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
+	foundService := &corev1.Service{}
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, foundService)
+	if err != nil && errors.IsNotFound(err) {
+		service := r.serviceForHazelcast(hazelcast)
+		reqLogger.Info("Creating a new Service for Hazelcast", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+		err = r.client.Create(context.TODO(), service)
+		if err != nil {
+			reqLogger.Error(err, "Failed to create new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{Requeue: true}, nil
+	} else if err != nil {
+		reqLogger.Error(err, "Failed to get Service")
+		return reconcile.Result{}, err
+	}
+
 	// Ensure the deployment size is the same as the spec
 	size := hazelcast.Spec.Size
 	if *found.Spec.Replicas != size {
@@ -150,7 +166,7 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 	podNames := getPodNames(podList.Items)
 
-	// Update status.Nodes if neededhazelcast
+	// Update status.Nodes if needed
 	if !reflect.DeepEqual(podNames, hazelcast.Status.Nodes) {
 		hazelcast.Status.Nodes = podNames
 		err := r.client.Status().Update(context.TODO(), hazelcast)
@@ -163,10 +179,11 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	return reconcile.Result{}, nil
 }
 
-// deploymentForHazelcast returns a hazelcast Deployment object
+// stateFullSetForHazelcast returns a hazelcast StatefullSet object
 func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *appsv1.StatefulSet {
 	ls := labelsForHazelcast(hazelcast.Name)
 	replicas := hazelcast.Spec.Size
+	serviceName := hazelcast.Spec.Service.Name
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -174,7 +191,8 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 			Namespace: hazelcast.Namespace,
 		},
 		Spec: appsv1.StatefulSetSpec{
-			Replicas: &replicas,
+			Replicas:    &replicas,
+			ServiceName: serviceName,
 			Selector: &metav1.LabelSelector{
 				MatchLabels: ls,
 			},
@@ -196,9 +214,32 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 		},
 	}
 
-	// Set Memcached instance as the owner and controller
+	// Set Hazelcast instance as the owner and controller
 	controllerutil.SetControllerReference(hazelcast, statefulSet, r.scheme)
 	return statefulSet
+}
+
+// serviceForHazelcast returns a service object
+func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.Service {
+	serviceSpec := hazelcast.Spec.Service.Spec
+
+	service := &corev1.Service{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      hazelcast.Name,
+			Namespace: hazelcast.Namespace,
+		},
+		Spec: corev1.ServiceSpec{
+			Type:     serviceSpec.Type,
+			Selector: map[string]string{"app": "hazelcast", "hazelcast_cr": hazelcast.Name},
+			Ports: []corev1.ServicePort{{
+				Protocol: serviceSpec.Ports[0].Protocol,
+				Port:     serviceSpec.Ports[0].Port,
+			}},
+		},
+	}
+
+	controllerutil.SetControllerReference(hazelcast, service, r.scheme)
+	return service
 }
 
 // labelsForHazelcast returns the labels for selecting the resources
