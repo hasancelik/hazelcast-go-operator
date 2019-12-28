@@ -5,3 +5,12 @@ metadata:
 spec:
   # Add fields here
   size: 3
+  service:
+    metadata:
+      name: hazelcast-service
+    spec:
+      type: LoadBalancer
+      ports:
+      - name: hazelcast
+        protocol: TCP
+        port: 5701

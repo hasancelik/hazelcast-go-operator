@@ -125,7 +125,8 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	}
 
 	foundService := &corev1.Service{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, foundService)
+	serviceSpec := hazelcast.Spec.Service
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: serviceSpec.ObjectMeta.Name, Namespace: hazelcast.Namespace}, foundService)
 	if err != nil && errors.IsNotFound(err) {
 		service := r.serviceForHazelcast(hazelcast)
 		reqLogger.Info("Creating a new Service for Hazelcast", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
@@ -183,7 +184,7 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *appsv1.StatefulSet {
 	ls := labelsForHazelcast(hazelcast.Name)
 	replicas := hazelcast.Spec.Size
-	serviceName := hazelcast.Spec.Service.Name
+	serviceName := hazelcast.Spec.Service.ObjectMeta.Name
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -222,10 +223,11 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 // serviceForHazelcast returns a service object
 func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.Service {
 	serviceSpec := hazelcast.Spec.Service.Spec
+	serviceMetadata := hazelcast.Spec.Service.ObjectMeta
 
 	service := &corev1.Service{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      hazelcast.Name,
+			Name:      serviceMetadata.Name,
 			Namespace: hazelcast.Namespace,
 		},
 		Spec: corev1.ServiceSpec{
