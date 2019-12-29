@@ -15,6 +15,8 @@ type HazelcastSpec struct {
 	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
 	Size int32 `json:"size"`
 
+	Config corev1.ConfigMap `json:"config"`
+
 	Service corev1.Service `json:"service"`
 }
 

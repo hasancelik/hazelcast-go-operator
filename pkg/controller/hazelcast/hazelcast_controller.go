@@ -105,6 +105,23 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
+	foundConfigMap := &corev1.ConfigMap{}
+	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
+	err = r.client.Get(context.TODO(), types.NamespacedName{Name: configMapName, Namespace: hazelcast.Namespace}, foundConfigMap)
+	if err != nil && errors.IsNotFound(err) {
+		configMap := r.configMapForHazelcast(hazelcast)
+		reqLogger.Info("Creating a new ConfigMap for Hazelcast", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
+		err = r.client.Create(context.TODO(), configMap)
+		if err != nil {
+			reqLogger.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
+			return reconcile.Result{}, err
+		}
+		return reconcile.Result{Requeue: true}, nil
+	} else if err != nil {
+		reqLogger.Error(err, "Failed to get ConfigMap")
+		return reconcile.Result{}, err
+	}
+
 	// Check if the StatefulSet already exists, if not create a new one
 	found := &appsv1.StatefulSet{}
 	err = r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, found)
@@ -185,6 +202,7 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 	ls := labelsForHazelcast(hazelcast.Name)
 	replicas := hazelcast.Spec.Size
 	serviceName := hazelcast.Spec.Service.ObjectMeta.Name
+	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -209,6 +227,24 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 							ContainerPort: 5701,
 							Name:          "hazelcast",
 						}},
+						VolumeMounts: []corev1.VolumeMount{{
+							Name:      "hazelcast-storage",
+							MountPath: "/data/hazelcast",
+						}},
+						Env: []corev1.EnvVar{{
+							Name:  "JAVA_OPTS",
+							Value: "-Dhazelcast.rest.enabled=true -Dhazelcast.config=/data/hazelcast/hazelcast.yaml",
+						}},
+					}},
+					Volumes: []corev1.Volume{{
+						Name: "hazelcast-storage",
+						VolumeSource: corev1.VolumeSource{
+							ConfigMap: &corev1.ConfigMapVolumeSource{
+								LocalObjectReference: corev1.LocalObjectReference{
+									Name: configMapName,
+								},
+							},
+						},
 					}},
 				},
 			},
@@ -239,6 +275,20 @@ func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Ha
 
 	controllerutil.SetControllerReference(hazelcast, service, r.scheme)
 	return service
+}
+
+func (r *ReconcileHazelcast) configMapForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.ConfigMap {
+	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
+	configMap := &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      configMapName,
+			Namespace: hazelcast.Namespace,
+		},
+		Data: hazelcast.Spec.Config.Data,
+	}
+
+	controllerutil.SetControllerReference(hazelcast, configMap, r.scheme)
+	return configMap
 }
 
 // labelsForHazelcast returns the labels for selecting the resources

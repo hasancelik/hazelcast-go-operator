@@ -3,8 +3,21 @@ kind: Hazelcast
 metadata:
   name: example-hazelcast
 spec:
-  # Add fields here
   size: 3
+  config:
+    metadata:
+      name: hazelcast-configuration
+    data:
+      hazelcast.yaml: |-
+        hazelcast:
+          network:
+            join:
+              multicast:
+                enabled: false
+              kubernetes:
+                enabled: true
+                service-name: hazelcast-service
+                namespace: default
   service:
     metadata:
       name: hazelcast-service
