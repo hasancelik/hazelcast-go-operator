@@ -3,6 +3,7 @@ package hazelcast
 import (
 	"context"
 	"reflect"
+	"strings"
 
 	hazelcastv1alpha1 "github.com/hazelcast/hazelcast-go-operator/pkg/apis/hazelcast/v1alpha1"
 
@@ -168,6 +169,18 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 			return reconcile.Result{}, err
 		}
 		// Spec updated - return and requeue
+		return reconcile.Result{Requeue: true}, nil
+	}
+
+	configYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
+	existingConfigYAML := foundConfigMap.Data["hazelcast.yaml"]
+	if !strings.EqualFold(existingConfigYAML, configYAML) {
+		foundConfigMap.Data["hazelcast.yaml"] = configYAML
+		err = r.client.Update(context.TODO(), foundConfigMap)
+		if err != nil {
+			reqLogger.Error(err, "Failed to update Hazelcast Pod(s) configuration(s)")
+			return reconcile.Result{}, err
+		}
 		return reconcile.Result{Requeue: true}, nil
 	}
 
