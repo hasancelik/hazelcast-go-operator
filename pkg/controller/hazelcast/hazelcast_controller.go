@@ -176,12 +176,39 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	existingConfigYAML := foundConfigMap.Data["hazelcast.yaml"]
 	if !strings.EqualFold(existingConfigYAML, configYAML) {
 		foundConfigMap.Data["hazelcast.yaml"] = configYAML
+		if len(foundConfigMap.ObjectMeta.Labels) == 0 {
+			foundConfigMap.ObjectMeta.Labels = map[string]string{"configMap": "updated"}
+		} else {
+			foundConfigMap.ObjectMeta.Labels["configMap"] = "updated"
+		}
 		err = r.client.Update(context.TODO(), foundConfigMap)
 		if err != nil {
 			reqLogger.Error(err, "Failed to update Hazelcast Pod(s) configuration(s)")
 			return reconcile.Result{}, err
 		}
+		reqLogger.Info("ConfigMap is updated!")
 		return reconcile.Result{Requeue: true}, nil
+	}
+
+	if len(foundConfigMap.ObjectMeta.Labels) != 0 {
+		if _, ok := foundConfigMap.Labels["configMap"]; ok {
+			statefulSet := &appsv1.StatefulSet{}
+			if err := r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, statefulSet); err != nil {
+				if !errors.IsNotFound(err) {
+					return reconcile.Result{}, err
+				}
+			}
+			statefulSetCopy := statefulSet.DeepCopy()
+			statefulSetCopy.Spec.Template.Annotations = map[string]string{"configMap": "updated"}
+			patch := client.MergeFrom(statefulSet)
+			patchErr := r.client.Patch(context.TODO(), statefulSetCopy, patch)
+			if patchErr != nil {
+				reqLogger.Error(patchErr, "Failed to Patch Hazelcast StatefulSet")
+				return reconcile.Result{}, patchErr
+			}
+			reqLogger.Info("StatefulSet is patched!")
+			return reconcile.Result{Requeue: true}, nil
+		}
 	}
 
 	// Update the Hazelcast status with the pod names
