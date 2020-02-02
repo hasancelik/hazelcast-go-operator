@@ -2,10 +2,13 @@ package hazelcast
 
 import (
 	"context"
+	"encoding/hex"
 	"reflect"
 	"strings"
 
 	hazelcastv1alpha1 "github.com/hazelcast/hazelcast-go-operator/pkg/apis/hazelcast/v1alpha1"
+
+	sha1 "crypto/sha1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
@@ -176,10 +179,11 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	existingConfigYAML := foundConfigMap.Data["hazelcast.yaml"]
 	if !strings.EqualFold(existingConfigYAML, configYAML) {
 		foundConfigMap.Data["hazelcast.yaml"] = configYAML
+		configCheckSum := generateSHA1CheckSum(&configYAML)
 		if len(foundConfigMap.ObjectMeta.Labels) == 0 {
-			foundConfigMap.ObjectMeta.Labels = map[string]string{"configMap": "updated"}
+			foundConfigMap.ObjectMeta.Labels = map[string]string{"configCheckSum": configCheckSum}
 		} else {
-			foundConfigMap.ObjectMeta.Labels["configMap"] = "updated"
+			foundConfigMap.ObjectMeta.Labels["configCheckSum"] = configCheckSum
 		}
 		err = r.client.Update(context.TODO(), foundConfigMap)
 		if err != nil {
@@ -190,25 +194,26 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{Requeue: true}, nil
 	}
 
-	if len(foundConfigMap.ObjectMeta.Labels) != 0 {
-		if _, ok := foundConfigMap.Labels["configMap"]; ok {
-			statefulSet := &appsv1.StatefulSet{}
-			if err := r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, statefulSet); err != nil {
-				if !errors.IsNotFound(err) {
-					return reconcile.Result{}, err
-				}
+	configCheckSum := foundConfigMap.Labels["configCheckSum"]
+	hazelcastConfigMapCheckSum := found.Spec.Template.Annotations["hazelcastConfigMapCheckSum"]
+	if !strings.EqualFold(configCheckSum, hazelcastConfigMapCheckSum) {
+		statefulSet := &appsv1.StatefulSet{}
+		if err := r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, statefulSet); err != nil {
+			if !errors.IsNotFound(err) {
+				return reconcile.Result{}, err
 			}
-			statefulSetCopy := statefulSet.DeepCopy()
-			statefulSetCopy.Spec.Template.Annotations = map[string]string{"configMap": "updated"}
-			patch := client.MergeFrom(statefulSet)
-			patchErr := r.client.Patch(context.TODO(), statefulSetCopy, patch)
-			if patchErr != nil {
-				reqLogger.Error(patchErr, "Failed to Patch Hazelcast StatefulSet")
-				return reconcile.Result{}, patchErr
-			}
-			reqLogger.Info("StatefulSet is patched!")
-			return reconcile.Result{Requeue: true}, nil
 		}
+		statefulSetCopy := statefulSet.DeepCopy()
+		configDataHazelcastYAML := foundConfigMap.Data["hazelcast.yaml"]
+		statefulSetCopy.Spec.Template.Annotations["hazelcastConfigMapCheckSum"] = generateSHA1CheckSum(&configDataHazelcastYAML)
+		patch := client.MergeFrom(statefulSet)
+		patchErr := r.client.Patch(context.TODO(), statefulSetCopy, patch)
+		if patchErr != nil {
+			reqLogger.Error(patchErr, "Failed to Patch Hazelcast StatefulSet")
+			return reconcile.Result{}, patchErr
+		}
+		reqLogger.Info("StatefulSet is patched!")
+		return reconcile.Result{Requeue: true}, nil
 	}
 
 	// Update the Hazelcast status with the pod names
@@ -243,6 +248,7 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 	replicas := hazelcast.Spec.Size
 	serviceName := hazelcast.Spec.Service.ObjectMeta.Name
 	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
+	configDataHazelcastYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
 
 	statefulSet := &appsv1.StatefulSet{
 		ObjectMeta: metav1.ObjectMeta{
@@ -257,7 +263,8 @@ func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha
 			},
 			Template: corev1.PodTemplateSpec{
 				ObjectMeta: metav1.ObjectMeta{
-					Labels: ls,
+					Labels:      ls,
+					Annotations: map[string]string{"hazelcastConfigMapCheckSum": generateSHA1CheckSum(&configDataHazelcastYAML)},
 				},
 				Spec: corev1.PodSpec{
 					Containers: []corev1.Container{{
@@ -319,10 +326,12 @@ func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Ha
 
 func (r *ReconcileHazelcast) configMapForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.ConfigMap {
 	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
+	configDataHazelcastYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
 	configMap := &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
 			Name:      configMapName,
 			Namespace: hazelcast.Namespace,
+			Labels:    map[string]string{"configCheckSum": generateSHA1CheckSum(&configDataHazelcastYAML)},
 		},
 		Data: hazelcast.Spec.Config.Data,
 	}
@@ -344,4 +353,14 @@ func getPodNames(pods []corev1.Pod) []string {
 		podNames = append(podNames, pod.Name)
 	}
 	return podNames
+}
+
+func generateSHA1CheckSum(str *string) string {
+	if str != nil {
+		sha1 := sha1.New()
+		sha1.Write([]byte(*str))
+		checkSum := sha1.Sum(nil)
+		return hex.EncodeToString(checkSum)
+	}
+	return ""
 }
