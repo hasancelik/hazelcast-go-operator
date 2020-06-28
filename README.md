@@ -1,12 +1,16 @@
 # hazelcast-go-operator
 
+A Kubernetes Operator based on the Operator SDK for creating and managing Hazelcast instances.
+
 ## Current status
 
-This is a PoC / alpha version.
+The project is kind of **toy project** for now so it is at **very early alpha** stage.
 
 ## Installation
 
-Create k8s cluster at GKE because all images are at [Google Cloud Container Registery](https://console.cloud.google.com/gcr/images/hazelcast-33/GLOBAL/hazelcast-go-operator?project=hazelcast-33&gcrImageListsize=30), then run below commands:
+You can find latest images at [DockerHub](https://hub.docker.com/repository/docker/hasancelik/hazelcast-go-operator).
+
+After create Kubernetes cluster at your local or one of the cloud environments, you can play the operator via below commands:
 
 `kubectl apply --recursive -f deploy/crds/hazelcast.com_hazelcasts_crd.yaml`
 

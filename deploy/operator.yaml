@@ -16,7 +16,7 @@ spec:
       containers:
         - name: hazelcast-go-operator
           # Replace this with the built image name
-          image: gcr.io/hazelcast-33/hazelcast-go-operator:v0.1.0
+          image: hasancelik/hazelcast-go-operator:0.1.0
           command:
           - hazelcast-go-operator
           imagePullPolicy: Always
