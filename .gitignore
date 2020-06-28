@@ -76,5 +76,5 @@ tags
 .history
 # End of https://www.gitignore.io/api/go,vim,emacs,visualstudiocode
 
-
+.idea
 prepare_operator_image.sh

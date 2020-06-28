@@ -2,23 +2,14 @@ package hazelcast
 
 import (
 	"context"
-	"encoding/hex"
-	"reflect"
-	"strings"
-
 	hazelcastv1alpha1 "github.com/hazelcast/hazelcast-go-operator/pkg/apis/hazelcast/v1alpha1"
-
-	sha1 "crypto/sha1"
 
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/errors"
-	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
-	"k8s.io/apimachinery/pkg/types"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 	"sigs.k8s.io/controller-runtime/pkg/controller"
-	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/manager"
@@ -68,6 +59,22 @@ func add(mgr manager.Manager, r reconcile.Reconciler) error {
 		return err
 	}
 
+	err = c.Watch(&source.Kind{Type: &corev1.ConfigMap{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &hazelcastv1alpha1.Hazelcast{},
+	})
+	if err != nil {
+		return err
+	}
+
+	err = c.Watch(&source.Kind{Type: &corev1.Service{}}, &handler.EnqueueRequestForOwner{
+		IsController: true,
+		OwnerType:    &hazelcastv1alpha1.Hazelcast{},
+	})
+	if err != nil {
+		return err
+	}
+
 	return nil
 }
 
@@ -94,8 +101,8 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 	reqLogger.Info("Reconciling Hazelcast")
 
 	// Fetch the Hazelcast instance
-	hazelcast := &hazelcastv1alpha1.Hazelcast{}
-	err := r.client.Get(context.TODO(), request.NamespacedName, hazelcast)
+	h := &hazelcastv1alpha1.Hazelcast{}
+	err := r.client.Get(context.TODO(), request.NamespacedName, h)
 	if err != nil {
 		if errors.IsNotFound(err) {
 			// Request object not found, could have been deleted after reconcile request.
@@ -109,258 +116,60 @@ func (r *ReconcileHazelcast) Reconcile(request reconcile.Request) (reconcile.Res
 		return reconcile.Result{}, err
 	}
 
-	foundConfigMap := &corev1.ConfigMap{}
-	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: configMapName, Namespace: hazelcast.Namespace}, foundConfigMap)
-	if err != nil && errors.IsNotFound(err) {
-		configMap := r.configMapForHazelcast(hazelcast)
-		reqLogger.Info("Creating a new ConfigMap for Hazelcast", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-		err = r.client.Create(context.TODO(), configMap)
-		if err != nil {
-			reqLogger.Error(err, "Failed to create new ConfigMap", "ConfigMap.Namespace", configMap.Namespace, "ConfigMap.Name", configMap.Name)
-			return reconcile.Result{}, err
-		}
-		return reconcile.Result{Requeue: true}, nil
-	} else if err != nil {
-		reqLogger.Error(err, "Failed to get ConfigMap")
-		return reconcile.Result{}, err
+	var result *reconcile.Result
+
+
+	result, err = r.ensureConfigMap(h, r.configMapForHazelcast(h))
+	if result != nil {
+		return *result, err
 	}
 
-	// Check if the StatefulSet already exists, if not create a new one
-	found := &appsv1.StatefulSet{}
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, found)
-	if err != nil && errors.IsNotFound(err) {
-		// Define a new statefulSet
-		statefulSet := r.statefulSetForHazelcast(hazelcast)
-		reqLogger.Info("Creating a new StatefulSet", "StatefulSet.Namespace", statefulSet.Namespace, "StatefulSet.Name", statefulSet.Name)
-		err = r.client.Create(context.TODO(), statefulSet)
-		if err != nil {
-			reqLogger.Error(err, "Failed to create new StatefulSet", "StatefulSet.Namespace", statefulSet.Namespace, "StatefulSet.Name", statefulSet.Name)
-			return reconcile.Result{}, err
-		}
-		// StatefulSet created successfully - return and requeue
-		return reconcile.Result{Requeue: true}, nil
-	} else if err != nil {
-		reqLogger.Error(err, "Failed to get StatefulSet")
-		return reconcile.Result{}, err
+	result, err = r.ensureService(h, r.serviceForHazelcast(h))
+	if result != nil {
+		return *result, err
 	}
 
-	foundService := &corev1.Service{}
-	serviceSpec := hazelcast.Spec.Service
-	err = r.client.Get(context.TODO(), types.NamespacedName{Name: serviceSpec.ObjectMeta.Name, Namespace: hazelcast.Namespace}, foundService)
-	if err != nil && errors.IsNotFound(err) {
-		service := r.serviceForHazelcast(hazelcast)
-		reqLogger.Info("Creating a new Service for Hazelcast", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
-		err = r.client.Create(context.TODO(), service)
-		if err != nil {
-			reqLogger.Error(err, "Failed to create new Service", "Service.Namespace", service.Namespace, "Service.Name", service.Name)
-			return reconcile.Result{}, err
-		}
-		return reconcile.Result{Requeue: true}, nil
-	} else if err != nil {
-		reqLogger.Error(err, "Failed to get Service")
-		return reconcile.Result{}, err
+	currentState := NewClusterState()
+	err = currentState.Read(context.TODO(), h, r.client)
+	if err != nil {
+		log.Error(err, "Error reading state")
+		return *result, err
+	}
+	currentConfigHash := currentState.HazelcastConfig.Annotations["lastConfigHash"]
+	result, err = r.ensureStatefulSet(h, r.statefulsetForHazelcast(h,currentConfigHash))
+	if result != nil {
+		return *result, err
 	}
 
-	// Ensure the deployment size is the same as the spec
-	size := hazelcast.Spec.Size
-	if *found.Spec.Replicas != size {
-		found.Spec.Replicas = &size
-		err = r.client.Update(context.TODO(), found)
-		if err != nil {
-			reqLogger.Error(err, "Failed to update StatefulSet", "StatefulSet.Namespace", found.Namespace, "StatefulSet.Name", found.Name)
-			return reconcile.Result{}, err
-		}
-		// Spec updated - return and requeue
-		return reconcile.Result{Requeue: true}, nil
+	currentState = NewClusterState()
+	err = currentState.Read(context.TODO(), h, r.client)
+	if err != nil {
+		log.Error(err, "Error reading state")
+		return *result, err
+	}
+	currentConfigHash = currentState.HazelcastConfig.Annotations["lastConfigHash"]
+	currentStatefulSet := currentState.HazelcastStatefulSet
+	result, err = r.checkStatefulSetConfigHash(currentStatefulSet, currentConfigHash)
+	if result != nil {
+		return *result, err
 	}
 
-	configYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
-	existingConfigYAML := foundConfigMap.Data["hazelcast.yaml"]
-	if !strings.EqualFold(existingConfigYAML, configYAML) {
-		foundConfigMap.Data["hazelcast.yaml"] = configYAML
-		configCheckSum := generateSHA1CheckSum(&configYAML)
-		if len(foundConfigMap.ObjectMeta.Labels) == 0 {
-			foundConfigMap.ObjectMeta.Labels = map[string]string{"configCheckSum": configCheckSum}
-		} else {
-			foundConfigMap.ObjectMeta.Labels["configCheckSum"] = configCheckSum
-		}
-		err = r.client.Update(context.TODO(), foundConfigMap)
-		if err != nil {
-			reqLogger.Error(err, "Failed to update Hazelcast Pod(s) configuration(s)")
-			return reconcile.Result{}, err
-		}
-		reqLogger.Info("ConfigMap is updated!")
-		return reconcile.Result{Requeue: true}, nil
+	currentState = NewClusterState()
+	err = currentState.Read(context.TODO(), h, r.client)
+	if err != nil {
+		log.Error(err, "Error reading state")
+		return *result, err
+	}
+	currentStatefulSet = currentState.HazelcastStatefulSet
+	result, err = r.checkStatefulSize(h, currentStatefulSet)
+	if result != nil {
+		return *result, err
 	}
 
-	configCheckSum := foundConfigMap.Labels["configCheckSum"]
-	hazelcastConfigMapCheckSum := found.Spec.Template.Annotations["hazelcastConfigMapCheckSum"]
-	if !strings.EqualFold(configCheckSum, hazelcastConfigMapCheckSum) {
-		statefulSet := &appsv1.StatefulSet{}
-		if err := r.client.Get(context.TODO(), types.NamespacedName{Name: hazelcast.Name, Namespace: hazelcast.Namespace}, statefulSet); err != nil {
-			if !errors.IsNotFound(err) {
-				return reconcile.Result{}, err
-			}
-		}
-		statefulSetCopy := statefulSet.DeepCopy()
-		configDataHazelcastYAML := foundConfigMap.Data["hazelcast.yaml"]
-		statefulSetCopy.Spec.Template.Annotations["hazelcastConfigMapCheckSum"] = generateSHA1CheckSum(&configDataHazelcastYAML)
-		patch := client.MergeFrom(statefulSet)
-		patchErr := r.client.Patch(context.TODO(), statefulSetCopy, patch)
-		if patchErr != nil {
-			reqLogger.Error(patchErr, "Failed to Patch Hazelcast StatefulSet")
-			return reconcile.Result{}, patchErr
-		}
-		reqLogger.Info("StatefulSet is patched!")
-		return reconcile.Result{Requeue: true}, nil
-	}
-
-	// Update the Hazelcast status with the pod names
-	// List the pods for this hazelcast's deployment
-	podList := &corev1.PodList{}
-	listOpts := []client.ListOption{
-		client.InNamespace(hazelcast.Namespace),
-		client.MatchingLabels(labelsForHazelcast(hazelcast.Name)),
-	}
-	if err = r.client.List(context.TODO(), podList, listOpts...); err != nil {
-		reqLogger.Error(err, "Failed to list pods", "Hazelcast.Namespace", hazelcast.Namespace, "Hazelcast.Name", hazelcast.Name)
-		return reconcile.Result{}, err
-	}
-	podNames := getPodNames(podList.Items)
-
-	// Update status.Nodes if needed
-	if !reflect.DeepEqual(podNames, hazelcast.Status.Nodes) {
-		hazelcast.Status.Nodes = podNames
-		err := r.client.Status().Update(context.TODO(), hazelcast)
-		if err != nil {
-			reqLogger.Error(err, "Failed to update Hazelcast status")
-			return reconcile.Result{}, err
-		}
+	result, err = r.updateCRStatus(h)
+	if result != nil {
+		return *result, err
 	}
 
 	return reconcile.Result{}, nil
-}
-
-// stateFullSetForHazelcast returns a hazelcast StatefullSet object
-func (r *ReconcileHazelcast) statefulSetForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *appsv1.StatefulSet {
-	ls := labelsForHazelcast(hazelcast.Name)
-	replicas := hazelcast.Spec.Size
-	serviceName := hazelcast.Spec.Service.ObjectMeta.Name
-	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
-	configDataHazelcastYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
-
-	statefulSet := &appsv1.StatefulSet{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      hazelcast.Name,
-			Namespace: hazelcast.Namespace,
-		},
-		Spec: appsv1.StatefulSetSpec{
-			Replicas:    &replicas,
-			ServiceName: serviceName,
-			Selector: &metav1.LabelSelector{
-				MatchLabels: ls,
-			},
-			Template: corev1.PodTemplateSpec{
-				ObjectMeta: metav1.ObjectMeta{
-					Labels:      ls,
-					Annotations: map[string]string{"hazelcastConfigMapCheckSum": generateSHA1CheckSum(&configDataHazelcastYAML)},
-				},
-				Spec: corev1.PodSpec{
-					Containers: []corev1.Container{{
-						Image: "hazelcast/hazelcast:3.12.5",
-						Name:  "hazelcast",
-						Ports: []corev1.ContainerPort{{
-							ContainerPort: 5701,
-							Name:          "hazelcast",
-						}},
-						VolumeMounts: []corev1.VolumeMount{{
-							Name:      "hazelcast-storage",
-							MountPath: "/data/hazelcast",
-						}},
-						Env: []corev1.EnvVar{{
-							Name:  "JAVA_OPTS",
-							Value: "-Dhazelcast.rest.enabled=true -Dhazelcast.config=/data/hazelcast/hazelcast.yaml",
-						}},
-					}},
-					Volumes: []corev1.Volume{{
-						Name: "hazelcast-storage",
-						VolumeSource: corev1.VolumeSource{
-							ConfigMap: &corev1.ConfigMapVolumeSource{
-								LocalObjectReference: corev1.LocalObjectReference{
-									Name: configMapName,
-								},
-							},
-						},
-					}},
-				},
-			},
-		},
-	}
-
-	// Set Hazelcast instance as the owner and controller
-	controllerutil.SetControllerReference(hazelcast, statefulSet, r.scheme)
-	return statefulSet
-}
-
-// serviceForHazelcast returns a service object
-func (r *ReconcileHazelcast) serviceForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.Service {
-	serviceSpec := hazelcast.Spec.Service.Spec
-	serviceMetadata := hazelcast.Spec.Service.ObjectMeta
-
-	service := &corev1.Service{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      serviceMetadata.Name,
-			Namespace: hazelcast.Namespace,
-		},
-		Spec: corev1.ServiceSpec{
-			Type:     serviceSpec.Type,
-			Selector: map[string]string{"app": "hazelcast", "hazelcast_cr": hazelcast.Name},
-			Ports:    serviceSpec.Ports,
-		},
-	}
-
-	controllerutil.SetControllerReference(hazelcast, service, r.scheme)
-	return service
-}
-
-func (r *ReconcileHazelcast) configMapForHazelcast(hazelcast *hazelcastv1alpha1.Hazelcast) *corev1.ConfigMap {
-	configMapName := hazelcast.Spec.Config.ObjectMeta.Name
-	configDataHazelcastYAML := hazelcast.Spec.Config.Data["hazelcast.yaml"]
-	configMap := &corev1.ConfigMap{
-		ObjectMeta: metav1.ObjectMeta{
-			Name:      configMapName,
-			Namespace: hazelcast.Namespace,
-			Labels:    map[string]string{"configCheckSum": generateSHA1CheckSum(&configDataHazelcastYAML)},
-		},
-		Data: hazelcast.Spec.Config.Data,
-	}
-
-	controllerutil.SetControllerReference(hazelcast, configMap, r.scheme)
-	return configMap
-}
-
-// labelsForHazelcast returns the labels for selecting the resources
-// belonging to the given hazelcast CR name.
-func labelsForHazelcast(name string) map[string]string {
-	return map[string]string{"app": "hazelcast", "hazelcast_cr": name}
-}
-
-// getPodNames returns the pod names of the array of pods passed in
-func getPodNames(pods []corev1.Pod) []string {
-	var podNames []string
-	for _, pod := range pods {
-		podNames = append(podNames, pod.Name)
-	}
-	return podNames
-}
-
-func generateSHA1CheckSum(str *string) string {
-	if str != nil {
-		sha1 := sha1.New()
-		sha1.Write([]byte(*str))
-		checkSum := sha1.Sum(nil)
-		return hex.EncodeToString(checkSum)
-	}
-	return ""
 }

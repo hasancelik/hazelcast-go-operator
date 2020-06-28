@@ -1,30 +1,43 @@
 package v1alpha1
 
 import (
-	corev1 "k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-// EDIT THIS FILE!  THIS IS SCAFFOLDING FOR YOU TO OWN!
-// NOTE: json tags are required.  Any new fields you add must have json tags for the fields to be serialized.
-
 // HazelcastSpec defines the desired state of Hazelcast
 type HazelcastSpec struct {
-	// INSERT ADDITIONAL SPEC FIELDS - desired state of cluster
-	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
-	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
-	Size int32 `json:"size"`
+	Size        int32                 `json:"size"`
+	HostPort    int32                 `json:"hostPort"`
+	StatefulSet *HazelcastStatefulSet `json:"statefulset,omitempty"`
+	Config      *HazelcastConfig      `json:"config"`
+	Service     *HazelcastService     `json:"service"`
+}
 
-	Config corev1.ConfigMap `json:"config"`
+type HazelcastService struct {
+	Name      string           `json:"name,omitempty"`
+	Type      v1.ServiceType   `json:"type,omitempty"`
+	Ports     []v1.ServicePort `json:"ports,omitempty"`
+	ClusterIP string           `json:"clusterIP,omitempty"`
+}
 
-	Service corev1.Service `json:"service"`
+type HazelcastConfig struct {
+	Name string            `json:"name,omitempty"`
+	Data map[string]string `json:"data",omitempty`
+}
+
+type HazelcastStatefulSet struct {
+	Annotations     map[string]string      `json:"annotations,omitempty"`
+	Labels          map[string]string      `json:"labels,omitempty"`
+	Replicas        int32                  `json:"replicas"`
+	SecurityContext *v1.PodSecurityContext `json:"securityContext,omitempty"`
+	//NodeSelector    map[string]string      `json:"nodeSelector,omitempty"`
+	//Tolerations     []v1.Toleration        `json:"tolerations,omitempty"`
+	//Affinity        *v1.Affinity           `json:"affinity,omitempty"`
 }
 
 // HazelcastStatus defines the observed state of Hazelcast
 type HazelcastStatus struct {
-	// INSERT ADDITIONAL STATUS FIELD - define observed state of cluster
-	// Important: Run "operator-sdk generate k8s" to regenerate code after modifying this file
-	// Add custom validation using kubebuilder tags: https://book-v1.book.kubebuilder.io/beyond_basics/generating_crd.html
 	Nodes []string `json:"nodes"`
 }
 

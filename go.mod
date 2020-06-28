@@ -3,8 +3,11 @@ module github.com/hazelcast/hazelcast-go-operator
 go 1.13
 
 require (
+	github.com/hashicorp/golang-lru v0.5.4 // indirect
 	github.com/operator-framework/operator-sdk v0.13.0
 	github.com/spf13/pflag v1.0.5
+	golang.org/x/sys v0.0.0-20200625212154-ddb9806d33ae // indirect
+	gopkg.in/yaml.v2 v2.3.0
 	k8s.io/api v0.0.0
 	k8s.io/apimachinery v0.0.0
 	k8s.io/client-go v12.0.0+incompatible

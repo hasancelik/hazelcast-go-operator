@@ -4,9 +4,9 @@ metadata:
   name: example-hazelcast
 spec:
   size: 3
+  hostPort: 5701
   config:
-    metadata:
-      name: hazelcast-configuration
+    name: hazelcast-configuration
     data:
       hazelcast.yaml: |-
         hazelcast:
@@ -18,12 +18,13 @@ spec:
                 enabled: true
                 service-name: hazelcast-service
                 namespace: default
+            rest-api:
+              enabled: true
+              endpoint-groups:
+                HEALTH_CHECK:
+                  enabled: true
   service:
-    metadata:
-      name: hazelcast-service
-    spec:
-      type: LoadBalancer
-      ports:
-      - name: hazelcast
-        protocol: TCP
-        port: 5701
+    name: hazelcast-service
+    type: ClusterIP
+    port: 5701
+    clusterIP: "None"

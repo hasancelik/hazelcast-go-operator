@@ -1,5 +1,11 @@
 # hazelcast-go-operator
 
+## Current status
+
+This is a PoC / alpha version.
+
+## Installation
+
 Create k8s cluster at GKE because all images are at [Google Cloud Container Registery](https://console.cloud.google.com/gcr/images/hazelcast-33/GLOBAL/hazelcast-go-operator?project=hazelcast-33&gcrImageListsize=30), then run below commands:
 
 `kubectl apply --recursive -f deploy/crds/hazelcast.com_hazelcasts_crd.yaml`
